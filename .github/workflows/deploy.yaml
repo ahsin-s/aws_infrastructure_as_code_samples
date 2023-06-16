@@ -1,0 +1,56 @@
+# NOTE: Highly recommend to use OIDC authentication for AWS.
+# For details on how to configure, see this repo's readme https://github.com/aws-actions/configure-aws-credentials
+permissions:
+  id-token: write # required to use OIDC authentication
+  contents: read # required to check out the code from the repo
+
+name: Deploy CloudFormation
+
+on:
+  # manually trigger from any branch
+  workflow_dispatch: {}
+
+  # automatically trigger when a PR is created to merge into main
+  pull_request:
+    branches:
+      - main
+
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      # jq is used to parse json
+      - name: install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: ${{ secrets.aws_role_to_assume }}  # this role can be created by a different workflow or manually through the IAM console
+          role-duration-seconds: 4200 # the ttl of the session, in seconds. must be >= 900
+          aws-region: us-east-1  # specify region here
+
+      - name: Deploy CloudFormation stack
+        id: deploy-cloudformation
+        uses: aws-actions/aws-cloudformation-github-deploy@v1.0.3
+        with:
+          name: myawesomeimagebuildercloudformation  # specify the name of the cloudformation stack
+          template: aws/cloudformation.yaml
+          capabilities: CAPABILITY_NAMED_IAM
+          no-fail-on-empty-changeset: "1"  # this makes it so if you re-run this step without changes to cloudformation resources an error isn't raised
+
+      # runs a custom bash script I wrote which triggers a build of the image
+      # I did not see any solution that gave a working example of how to do this.
+      - name: Trigger ImagePipeline Build
+        env:
+          IMAGE_PIPELINE_ARN: ${{ steps.deploy-cloudformation.outputs.PipelineName }}
+          TIMEOUT_AFTER: 3600  # seconds
+        run: bash scripts/trigger_image_pipeline.sh
+
