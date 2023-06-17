@@ -1,0 +1,128 @@
+# create the resources for a lightweight, low cost deployment of django application
+# the application is deployed using docker
+Parameters:
+  CodeBucketName:
+    Type: String
+    Description: Name of the bucket where project code is uploaded
+
+  InstanceType:
+    Type: String
+    Description: Ec2 Instance Type
+    ConstraintDescription: Must be a valid ec2 instance
+
+  InstanceName:
+    Type: String
+    Description: Ec2 Instance Name
+
+  AMI:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Description: Specify the AMI that will be used as the OS for the image
+
+  KeyName:
+    Type: String
+    Description: Name of the EC2 key pair
+    Default: ec2-key-pair-for-ssh
+
+  Ec2PublicKey:
+    Type: String
+    Description: Public key of the RSA key used for SSH access
+
+
+Resources:
+  CodeBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref CodeBucketName
+      AccessControl: Private
+
+  # a custom security group that allows http, https, and SSH traffic to the instance
+  EC2InstanceSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Allow HTTP, HTTPS, and SSH traffic
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: 10.0.0.0/16
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    DependsOn: VPC
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.0.0/24
+      AvailabilityZone: !Ref AWS::Region
+
+  InstanceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: EC2Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:*'
+                Resource: !Sub 'arn:aws:s3:::${BucketName}/*'
+
+  IamInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    DependsOn:
+      - InstanceRole
+    Properties:
+      Path: /
+      Roles:
+        - !Ref InstanceRole
+
+
+  EC2KeyPairForSSH:
+    Type: AWS::EC2::KeyPair
+    Properties:
+      KeyName: !Ref KeyName
+      PublicKeyMaterial: !Ref Ec2PublicKey
+
+
+
+  Ec2Instance:
+    Type: 'AWS::EC2::Instance'
+    DependsOn:
+      - EC2KeyPairForSSH
+      - EC2InstanceSecurityGroup
+      - IamInstanceProfile
+    Properties:
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      ImageId: !Ref AMI
+      IamInstanceProfile: !Ref IamInstanceProfile
+      SecurityGroups:
+        - !Ref EC2InstanceSecurityGroup
+
+      UserData: |
+        echo "installing Docker"
+        sudo apt install -y docker
+        echo "Docker installed"
