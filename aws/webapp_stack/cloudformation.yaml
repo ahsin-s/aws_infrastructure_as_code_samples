@@ -65,7 +65,7 @@ Resources:
     Properties:
       VpcId: !Ref VPC
       CidrBlock: 10.0.0.0/24
-      AvailabilityZone: !Ref AWS::Region
+      AvailabilityZone: us-east-1a
 
   InstanceRole:
     Type: 'AWS::IAM::Role'
