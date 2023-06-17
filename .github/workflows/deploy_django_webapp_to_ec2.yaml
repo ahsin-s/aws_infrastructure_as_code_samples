@@ -1,0 +1,130 @@
+permissions:
+  id-token: write # required to use OIDC authentication
+  contents: read # required to check out the code from the repo
+
+name: Deploy CloudFormation
+
+on:
+  # manually trigger from any branch
+  workflow_dispatch: {}
+
+  # automatically trigger when a PR is created to merge into main
+  pull_request:
+    branches:
+      - master
+
+
+jobs:
+  deploy_cloudformation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Load manifest
+        id: load-manifest
+        run: |
+          echo "::set-output name=config::$(cat manifest.yaml)"
+          echo "$config"
+      - name: Checkout repository
+        uses: actions/checkout@v2
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: ${{ secrets.role_to_assume }}
+          role-duration-seconds: 900 # the ttl of the session, in seconds. must be >= 900
+          aws-region: us-east-1
+      - name: Deploy CloudFormation stack
+        uses: aws-actions/aws-cloudformation-github-deploy@v1.0.3
+        with:
+          name: django-webapp-deploy
+          template: cloudformation/webapp_stack/cloudformation.yaml
+          capabilities: CAPABILITY_NAMED_IAM
+          no-fail-on-empty-changeset: "1"
+          parameter-overrides: "InstanceType=t3.nano,InstanceName=django-webapp-instance,BucketName=django-webapp-bucket,
+          Ec2PublicKey=${{ secrets.SSH_PUBLIC_KEY }}" # need to create the SSH key manually and store it in secrets
+
+  project_code_upload:
+    runs-on: ubuntu-latest
+    needs: [ deploy_cloudformation ]
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v2  # this checks out the reference SHA for the event that triggered the workflow
+
+      - name: Project Code Zip
+        run: |
+          # zip the code that was checked out to $GITHUB_WORKSPACE
+          cd $GITHUB_WORKSPACE
+          zip -r code.zip /code/django_app
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: ${{ secrets.role_to_assume }}
+          role-duration-seconds: 900 # the ttl of the session, in seconds. must be >= 900
+          aws-region: us-east-1
+      - name: Upload Code to S3
+        run:
+          aws s3 cp code.zip s3://django-webapp-bucket/temp/code.zip
+
+  deploy_project_code:
+    runs-on: ubuntu-latest
+    # don't run until previous steps complete
+    needs: [ deploy_cloudformation, project_code_upload ]
+
+    steps:
+      - name: install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install jq -y
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: ${{ secrets.role_to_assume }}
+          role-duration-seconds: 900 # the ttl of the session, in seconds. must be >= 900
+          aws-region: us-east-1
+
+      - name: Get Public IP address
+        run: |
+          aws ec2 describe-instances --filters 'Name=tag:aws:cloudformation:stack-name, Values=django-webapp-deploy' 'Name=instance-state-name, Values=running' --query 'Reservations[0].Instances[0].PublicIpAddress' --output text > public_ip.txt
+          PUBLIC_IP=$(cat public_ip.txt)
+          echo "PUBLIC_IP=$PUBLIC_IP" >> "$GITHUB_ENV"
+
+      - name: Deploy Code Changes
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ env.PUBLIC_IP }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          username: ec2-user
+          script: |
+            # clear the directory where code will be setup
+            rm -rf /home/ec2-user/temp
+            mkdir /home/ec2-user/temp
+            
+            # create the code directory if it doesn't exist
+            mkdir -p /home/ec2-user/code
+            
+            # download the code from s3
+            echo "Downloading code from s3..."
+            aws s3 cp s3://dev-techconsulting-website/temp/code.zip /home/ec2-user/temp/
+            
+            # unzip the code
+            unzip /home/ec2-user/temp/code.zip -d /home/ec2-user/temp
+            
+            # backup the code directory
+            mv /home/ec2-user/code /home/ec2-user/backups/
+            
+            mkdir /home/ec2-user/code
+            
+            # copy the new code into the code directory
+            cp -r /home/ec2-user/temp/* /home/ec2-user/code/
+            
+            # stock existing docker compose processes
+            docker compose down
+            
+            # start the docker compose services
+            docker compose  /home/ec2-user/code/django_app/docker_compose.yaml up
+            
+            # delete the temp directory
+            rm -rf /home/ec2-user/temp
+
+
