@@ -1,0 +1,77 @@
+# Creates an elastic beanstalk application and environment
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  Environment:
+    Type: String
+    Description: dev/preprod/prod environment
+    AllowedValues:
+      - 'dev'
+      - 'preprod'
+      - 'prod'
+
+  SecretName:
+    Type: String
+    Description: 'Name of the secret to create'
+
+  BucketName:
+    Type: String
+    Description: 'Name of the bucket for storing static content from elastic beanstalk'
+
+  VPC:
+    Type: String
+    Description: 'VPC being used for this account'
+
+Resources:
+  # create a new secret in secrets manager with the name provided
+  SecretManager:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Ref SecretName
+      Description: 'Secret for mymasjidwebsite'
+
+  # create a bucket where the static content will be stored
+  Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref 'BucketName'
+      AccessControl: Private
+
+
+  ###### ELASTIC BEANSTALK ######
+  ElasticBeanstalkSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: ElasticBeanstalkSecurityGroup
+      GroupDescription: Security Group for all ElasticBeanstalk Environments
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref VPC
+
+  # elastic beanstalk application
+  ElasticBeanstalkApplication:
+    Type: AWS::ElasticBeanstalk::Application
+    Properties:
+      ApplicationName: 'mymasjidwebsite'
+      Description: 'mymasjidwebsite'
+
+
+  # elastic beanstalk environment
+  ElasticBeanstalkEnvironment:
+    Type: AWS::ElasticBeanstalk::Environment
+    Properties:
+      ApplicationName: !Ref ElasticBeanstalkApplication
+      EnvironmentName: !Sub 'mymasjidwebsite-${Environment}'
+      SolutionStackName: '64bit Amazon Linux 2023 v4.0.0 running Docker'
+      VersionLabel: "Initial Version"
+
